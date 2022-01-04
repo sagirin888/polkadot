@@ -37,7 +37,7 @@ use sp_runtime::{
 	traits::{AppVerify, One, Saturating, Zero},
 	DispatchError, RuntimeDebug, SaturatedConversion,
 };
-use sp_std::prelude::*;
+use sp_std::{cmp::Ordering, prelude::*};
 
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
@@ -114,6 +114,41 @@ pub enum VerifyDisputeSignatures {
 	Skip,
 }
 
+/// Sort the dispute statements according to the following prioritization:
+///  1. Prioritize local disputes over remote disputes.
+///  2. Prioritize older disputes over newer disp
+fn sort_by_closure<T: DisputesHandler<BlockNumber>, BlockNumber: Ord>(
+	a: &DisputeStatementSet,
+	b: &DisputeStatementSet,
+) -> Ordering
+where
+	T: ?Sized,
+{
+	let a_local_block =
+		<T as DisputesHandler<BlockNumber>>::included_state(a.session, a.candidate_hash);
+	let b_local_block =
+		<T as DisputesHandler<BlockNumber>>::included_state(b.session, b.candidate_hash);
+	match (a_local_block, b_local_block) {
+		// Prioritize local disputes over remote disputes.
+		(None, Some(_)) => Ordering::Greater,
+		(Some(_), None) => Ordering::Less,
+		// For local disputes, prioritize those that occur at an earlier height.
+		(Some(a_height), Some(b_height)) => a_height.cmp(&b_height),
+		// Prioritize earlier remote disputes using session as rough proxy.
+		(None, None) => {
+			let session_ord = a.session.cmp(&b.session);
+			if session_ord == Ordering::Equal {
+				// sort by hash as last resort, to make below dedup work consistently
+				a.candidate_hash.cmp(&b.candidate_hash)
+			} else {
+				session_ord
+			}
+		},
+	}
+}
+
+use super::paras_inherent::IsSortedBy;
+
 /// Hook into disputes handling.
 ///
 /// Allows decoupling parachains handling from disputes so that it can
@@ -122,6 +157,20 @@ pub trait DisputesHandler<BlockNumber: Ord> {
 	/// Whether the chain is frozen, if the chain is frozen it will not accept
 	/// any new parachain blocks for backing or inclusion.
 	fn is_frozen() -> bool;
+
+	/// Assure sanity
+	fn assure_deduplicated_and_sorted(statement_sets: &MultiDisputeStatementSet) -> Result<(), ()> {
+		if !IsSortedBy::is_sorted_by(
+			statement_sets.as_slice(),
+			sort_by_closure::<Self, BlockNumber>,
+		) {
+			return Err(())
+		}
+		if statement_sets.as_slice().windows(2).any(|sub| sub.get(0) == sub.get(1)) {
+			return Err(())
+		}
+		Ok(())
+	}
 
 	/// Remove dispute statement duplicates and sort the non-duplicates based on
 	/// local (lower indicies) vs remotes (higher indices) and age (older with lower indices).
@@ -133,37 +182,12 @@ pub trait DisputesHandler<BlockNumber: Ord> {
 	fn deduplicate_and_sort_dispute_data(
 		statement_sets: &mut MultiDisputeStatementSet,
 	) -> Result<(), ()> {
-		use core::cmp::Ordering;
-
 		// TODO: Consider trade-of to avoid `O(n * log(n))` average lookups of `included_state`
 		// TODO: instead make a single pass and store the values lazily.
 		// TODO: https://github.com/paritytech/polkadot/issues/4527
 		let n = statement_sets.len();
 
-		// Sort the dispute statements according to the following prioritization:
-		//  1. Prioritize local disputes over remote disputes.
-		//  2. Prioritize older disputes over newer disputes.
-		statement_sets.sort_by(|a: &DisputeStatementSet, b: &DisputeStatementSet| {
-			let a_local_block = Self::included_state(a.session, a.candidate_hash);
-			let b_local_block = Self::included_state(b.session, b.candidate_hash);
-			match (a_local_block, b_local_block) {
-				// Prioritize local disputes over remote disputes.
-				(None, Some(_)) => Ordering::Greater,
-				(Some(_), None) => Ordering::Less,
-				// For local disputes, prioritize those that occur at an earlier height.
-				(Some(a_height), Some(b_height)) => a_height.cmp(&b_height),
-				// Prioritize earlier remote disputes using session as rough proxy.
-				(None, None) => {
-					let session_ord = a.session.cmp(&b.session);
-					if session_ord == Ordering::Equal {
-						// sort by hash as last resort, to make below dedup work consistently
-						a.candidate_hash.cmp(&b.candidate_hash)
-					} else {
-						session_ord
-					}
-				},
-			}
-		});
+		statement_sets.sort_by(sort_by_closure::<Self, BlockNumber>);
 		statement_sets
 			.dedup_by(|a, b| a.session == b.session && a.candidate_hash == b.candidate_hash);
 

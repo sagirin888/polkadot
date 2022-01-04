@@ -21,10 +21,8 @@
 //! to included.
 
 use crate::{
-	configuration, disputes, dmp, hrmp, paras,
-	paras_inherent::{sanitize_bitfields, DisputedBitfield},
-	scheduler::CoreAssignment,
-	shared, ump,
+	configuration, disputes, dmp, hrmp, paras, paras_inherent::DisputedBitfield,
+	scheduler::CoreAssignment, shared, ump,
 };
 use bitvec::{order::Lsb0 as BitOrderLsb0, vec::BitVec};
 use frame_support::pallet_prelude::*;
@@ -214,8 +212,14 @@ pub mod pallet {
 
 	#[pallet::error]
 	pub enum Error<T> {
+		/// Validator indices are out of order or contains duplicates.
+		UnsortedOrDuplicateValidatorIndices,
+		UnsortedOrDuplicate,
+		UnexpectedRelayParent,
 		/// Availability bitfield has unexpected size.
 		WrongBitfieldSize,
+		/// Bitfield consists of zeros only.
+		BitfieldAllZeros,
 		/// Multiple bitfields submitted by same validator or validators out of order by index.
 		BitfieldDuplicateOrUnordered,
 		/// Validator index out of bounds.
@@ -422,12 +426,12 @@ impl<T: Config> Pallet<T> {
 		disputed_bitfield: DisputedBitfield,
 		core_lookup: impl Fn(CoreIndex) -> Option<ParaId>,
 		full_check: FullCheck,
-	) -> Vec<(CoreIndex, CandidateHash)> {
+	) -> Result<Vec<(CoreIndex, CandidateHash)>, crate::inclusion::Error<T>> {
 		let validators = shared::Pallet::<T>::active_validator_keys();
 		let session_index = shared::Pallet::<T>::session_index();
 		let parent_hash = frame_system::Pallet::<T>::parent_hash();
 
-		let checked_bitfields = sanitize_bitfields::<T>(
+		let checked_bitfields = crate::paras_inherent::assure_sanity_bitfields::<T>(
 			signed_bitfields,
 			disputed_bitfield,
 			expected_bits,
@@ -435,16 +439,17 @@ impl<T: Config> Pallet<T> {
 			session_index,
 			&validators[..],
 			full_check,
-		);
+		)?;
 
-		let freed_cores = Self::update_pending_availability_and_get_freed_cores::<_, true>(
+		let freed_cores = Self::update_pending_availability_and_get_freed_cores::<_>(
 			expected_bits,
 			&validators[..],
 			checked_bitfields,
 			core_lookup,
+			true,
 		);
 
-		freed_cores
+		Ok(freed_cores)
 	}
 
 	/// Process candidates that have been backed. Provide the relay storage root, a set of candidates
