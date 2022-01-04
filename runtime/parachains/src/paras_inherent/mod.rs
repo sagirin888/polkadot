@@ -676,11 +676,12 @@ impl<T: Config> Pallet<T> {
 			);
 
 			let freed_concluded =
-				<inclusion::Pallet<T>>::update_pending_availability_and_get_freed_cores::<_, false>(
+				<inclusion::Pallet<T>>::update_pending_availability_and_get_freed_cores::<_>(
 					expected_bits,
 					&validator_public[..],
 					bitfields.clone(),
 					<scheduler::Pallet<T>>::core_para,
+					false,
 				);
 
 			let freed = collect_all_freed_cores::<T, _>(freed_concluded.iter().cloned());

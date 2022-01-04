@@ -311,11 +311,12 @@ impl<T: Config> Pallet<T> {
 	/// Extract the freed cores based on cores that became available.
 	///
 	/// Updates storage items `PendingAvailability` and `AvailabilityBitfields`.
-	pub(crate) fn update_pending_availability_and_get_freed_cores<F, const ON_CHAIN_USE: bool>(
+	pub(crate) fn update_pending_availability_and_get_freed_cores<F>(
 		expected_bits: usize,
 		validators: &[ValidatorId],
 		signed_bitfields: UncheckedSignedAvailabilityBitfields,
 		core_lookup: F,
+		enact_candidate: bool,
 	) -> Vec<(CoreIndex, CandidateHash)>
 	where
 		F: Fn(CoreIndex) -> Option<ParaId>,
@@ -387,7 +388,7 @@ impl<T: Config> Pallet<T> {
 					},
 				};
 
-				if ON_CHAIN_USE {
+				if enact_candidate {
 					let receipt = CommittedCandidateReceipt {
 						descriptor: pending_availability.descriptor,
 						commitments,
