@@ -1093,35 +1093,10 @@ impl<T: Config> Pallet<T> {
 			Error::<T>::SingleSidedDispute,
 		);
 
-		let session = set.session;
-		let candidate_hash = set.candidate_hash;
-		let summary = summary;
-		let max_spam_slots = config.dispute_max_spam_slots;
+		let DisputeStatementSet { session, candidate_hash, .. } = set;
 
-		// Apply spam slot changes. Bail early if too many occupied.
-		let is_local = <Included<T>>::contains_key(&session, &candidate_hash);
-		if !is_local {
-			let mut spam_slots: Vec<u32> =
-				SpamSlots::<T>::get(&session).unwrap_or_else(|| vec![0; n_validators]);
-
-			for (validator_index, spam_slot_change) in summary.spam_slot_changes {
-				let spam_slot = spam_slots
-					.get_mut(validator_index.0 as usize)
-					.expect("index is in-bounds, as checked above; qed");
-
-				match spam_slot_change {
-					SpamSlotChange::Inc => {
-						ensure!(*spam_slot < max_spam_slots, Error::<T>::PotentialSpam,);
-
-						*spam_slot += 1;
-					},
-					SpamSlotChange::Dec => {
-						*spam_slot = spam_slot.saturating_sub(1);
-					},
-				}
-			}
-			SpamSlots::<T>::insert(&session, spam_slots);
-		}
+		// we can omit spam slot checks, `fn filter_disputes_data` is
+		// always called before calling this `fn`.
 
 		if fresh {
 			Self::deposit_event(Event::DisputeInitiated(
