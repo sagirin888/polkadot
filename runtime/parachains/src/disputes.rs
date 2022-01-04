@@ -212,7 +212,7 @@ pub trait DisputesHandler<BlockNumber: Ord> {
 
 	/// Handle sets of dispute statements corresponding to 0 or more candidates.
 	/// Returns a vector of freshly created disputes.
-	fn provide_multi_dispute_data(
+	fn process_checked_multi_dispute_data(
 		statement_sets: CheckedMultiDisputeStatementSet,
 	) -> Result<Vec<(SessionIndex, CandidateHash)>, DispatchError>;
 
@@ -261,7 +261,7 @@ impl<BlockNumber: Ord> DisputesHandler<BlockNumber> for () {
 		None
 	}
 
-	fn provide_multi_dispute_data(
+	fn process_checked_multi_dispute_data(
 		_statement_sets: CheckedMultiDisputeStatementSet,
 	) -> Result<Vec<(SessionIndex, CandidateHash)>, DispatchError> {
 		Ok(Vec::new())
@@ -317,10 +317,10 @@ where
 		.filter_statement_set(set)
 	}
 
-	fn provide_multi_dispute_data(
+	fn process_checked_multi_dispute_data(
 		statement_sets: CheckedMultiDisputeStatementSet,
 	) -> Result<Vec<(SessionIndex, CandidateHash)>, DispatchError> {
-		pallet::Pallet::<T>::provide_multi_dispute_data(statement_sets)
+		pallet::Pallet::<T>::process_checked_multi_dispute_data(statement_sets)
 	}
 
 	fn note_included(
@@ -847,7 +847,7 @@ impl<T: Config> Pallet<T> {
 	/// This functions modifies the state when failing. It is expected to be called in inherent,
 	/// and to fail the extrinsic on error. As invalid inherents are not allowed, the dirty state
 	/// is not committed.
-	pub(crate) fn provide_multi_dispute_data(
+	pub(crate) fn process_checked_multi_dispute_data(
 		statement_sets: CheckedMultiDisputeStatementSet,
 	) -> Result<Vec<(SessionIndex, CandidateHash)>, DispatchError> {
 		let config = <configuration::Pallet<T>>::config();
@@ -856,7 +856,10 @@ impl<T: Config> Pallet<T> {
 		for statement_set in statement_sets {
 			let statement_set: DisputeStatementSet = statement_set.into();
 			let dispute_target = (statement_set.session, statement_set.candidate_hash);
-			if Self::provide_dispute_data(&config, statement_set)? {
+			if Self::process_checked_dispute_data(
+				statement_set,
+				config.dispute_post_conclusion_acceptance_period,
+			)? {
 				fresh.push(dispute_target);
 			}
 		}
@@ -1032,14 +1035,14 @@ impl<T: Config> Pallet<T> {
 	///
 	/// Fails if the dispute data is invalid. Returns a boolean indicating whether the
 	/// dispute is fresh.
-	fn provide_dispute_data(
-		config: &HostConfiguration<T::BlockNumber>,
-		set: DisputeStatementSet,
+	fn process_checked_dispute_data(
+		set: CheckedDisputeStatementSet,
+		dispute_post_conclusion_acceptance_period: T::BlockNumber,
 	) -> Result<bool, DispatchError> {
 		// Dispute statement sets on any dispute which concluded
 		// before this point are to be rejected.
 		let now = <frame_system::Pallet<T>>::block_number();
-		let oldest_accepted = now.saturating_sub(config.dispute_post_conclusion_acceptance_period);
+		let oldest_accepted = now.saturating_sub(dispute_post_conclusion_acceptance_period);
 
 		// Load session info to access validators
 		let session_info = match <session_info::Pallet<T>>::session_info(set.session) {
@@ -1074,7 +1077,7 @@ impl<T: Config> Pallet<T> {
 		// Import all votes. They were pre-checked.
 		let summary = {
 			let mut importer = DisputeStateImporter::new(dispute_state, now);
-			for (statement, validator_index, _signature) in &set.statements {
+			for (statement, validator_index, _signature) in set.as_ref().statements {
 				let valid = statement.indicates_validity();
 
 				importer.import(*validator_index, valid).map_err(Error::<T>::from)?;
@@ -1637,7 +1640,7 @@ mod tests {
 			}];
 
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![(9, candidate_hash.clone())],
@@ -1783,7 +1786,7 @@ mod tests {
 			}];
 
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![(1, candidate_hash.clone())],
@@ -1852,7 +1855,7 @@ mod tests {
 					),
 				],
 			}];
-			assert!(Pallet::<Test>::provide_multi_dispute_data(
+			assert!(Pallet::<Test>::process_checked_multi_dispute_data(
 				stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 			)
 			.is_ok());
@@ -1925,7 +1928,7 @@ mod tests {
 			}];
 
 			Pallet::<Test>::note_included(3, candidate_hash.clone(), 3);
-			assert!(Pallet::<Test>::provide_multi_dispute_data(
+			assert!(Pallet::<Test>::process_checked_multi_dispute_data(
 				stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 			)
 			.is_ok());
@@ -2021,7 +2024,7 @@ mod tests {
 			}];
 
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![(3, candidate_hash.clone())],
@@ -2079,7 +2082,7 @@ mod tests {
 			];
 
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![(4, candidate_hash.clone())],
@@ -2137,7 +2140,7 @@ mod tests {
 				},
 			];
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![(5, candidate_hash.clone())],
@@ -2182,7 +2185,7 @@ mod tests {
 				},
 			];
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![]
@@ -2268,7 +2271,7 @@ mod tests {
 				},
 			];
 			assert_ok!(
-				Pallet::<Test>::provide_multi_dispute_data(
+				Pallet::<Test>::process_checked_multi_dispute_data(
 					stmts.into_iter().map(CheckedDisputeStatementSet::from_unchecked).collect()
 				),
 				vec![]
